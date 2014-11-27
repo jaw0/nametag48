@@ -1,0 +1,83 @@
+
+; 8048 LCD nametag
+; Jeff Weisberg
+; Jun. 1993
+
+
+.hex "test2.hex"
+.symtab "test2.sym"
+.symlocal
+
+
+.org 0
+	jmp reset		; 04 09
+.org 3
+	jmp reset	; 04 09
+.org 7
+	jmp timer		; 04 09
+
+reset:
+
+	mov a, #$ff		; 23 ff
+	mov t, a
+	start t
+	en tcnti
+	mov r5, a
+_1$:
+	mov r2, a		; aa
+
+	mov a, #$ff		; 23 ff
+	mov r1, a		; a9
+	_2$:
+			dec a	; 07
+			nop	; 00
+			jnz _2$	; 96 xx
+		dec r1		; c9
+		mov a, r1	; f9
+		jnz _2$		; 96 xx
+
+	mov a, r2		; fa
+	cpl a			; 37
+	
+	jmp _1$			; 04 xx
+
+
+timer:
+
+	stop tcnt
+	mov r4, a
+	mov a, # -2
+	mov T, a
+
+	mov a, r2
+	jz skipme
+		mov a, r5
+		cpl a
+		mov r5, a
+		outl P1, a
+		outl P2, a
+		jmp tdone
+	skipme:
+	mov  a,# $ff
+	outl p1,a
+	outl p2, a
+tdone:
+	mov a, r4
+	start t
+	retr
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

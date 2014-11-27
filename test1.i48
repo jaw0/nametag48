@@ -1,0 +1,420 @@
+;
+; code for MCS-48 based LCD nametag
+; to be assembled by as48
+;
+; $Id: nametag.i48,v 1.3 1993/07/15 22:48:08 jaw Exp jaw $
+
+.hex	"nametag.hex"
+.symtab	"nametag.sym"
+#include "nametag.h"
+
+; define storage
+; GP RAM: 32-XX
+; Stack XX-32 
+; XX = 127 on '49, 63 on '48, and 255 on '50
+page 	= 32
+offset 	= 33
+
+; some constants
+MAXPAGES	= 3
+TIMERCOUNT	= -8	; yields ~ 1 ms intervals
+ESC		= 27
+
+.org 0
+	jmp reset
+.org 3
+	; ext int would go here
+.org 7
+.proc
+	; timer int
+	stop tcnt
+	dec SP
+	mov @SP, a
+	dec SP
+	mov a, #TIMERCOUNT
+	mov T, a
+	dec mdelay
+	mov a, mdelay
+	jnz ok$
+		dec delay4
+		mov a, modes
+		jb2 nofl$
+			; flash
+			mov a, delay4
+			rl  a
+			anl a, #4
+			orl a, #8
+			sel rb1
+			mov param, a
+			call outinstr
+			sel rb0
+			jmp over$
+		nofl$:
+	ok$:
+	; do beeping
+	mov a, modes
+	jb0 nobp$
+		; beeping
+		mov a, P2.image
+		xrl a, # B(P2.PIEZO)
+		outl P2, a
+		mov P2.image, a
+	nobp$:
+over$:
+	inc SP
+	mov a, @SP
+	inc SP
+	start t
+	retr	
+
+.proc
+reset:
+	mov SP, #127	; set up a stack
+	mov modes, #$ff
+	mov P2.image, #$ff
+
+	mov a, #$ff
+	outl P2, a	; set ports as input
+	outl P1, a
+
+	; init LCD 
+	clr a
+	outl P1, a
+	mov mdelay, #15
+	call wait	; 15 msec
+	mov param, #$30
+	call outnibble
+	mov mdelay, #5
+	call wait
+	mov param, #$30
+	call outnibble
+	; I think instr. wil take >100us
+	mov param, #30
+	call outnibble
+	mov param, #$20
+	call outnibble
+	mov param, #$28
+	call outinstr
+	mov param, #$08
+	call outinstr
+	mov param, #$1
+	call outinstr
+
+	;;; need to turn on display !!!
+	mov param, #$0C	;; Is this right?
+	call outinstr
+
+	mov a, #TIMERCOUNT
+	mov T, a
+	strt T		; start timer
+	en tcnti
+
+.proc
+char_loop:
+	mov GP, #page
+	mov @GP, #00
+	mov GP, #offset
+	mov @GP, #04
+
+proc_loop:
+		; test option switches here ??
+		;;;;;;;;;;;;;;;;;;;;;;;;;;;
+		
+		call nextchar
+		mov a, param
+		jnz .1$
+		jmp char_done
+	.1$:
+		add a, # - ESC
+		jnz .2$
+		jmp char_escape
+	.2$:
+		call outchar
+	jmp proc_loop
+
+char_done:
+	jmp char_loop
+
+esc_table:
+	.byte 1, 2		; clrscrn, home
+ 	.byte 7, 5		; set disp scroll left/ right
+	.byte 4, 6		; set reverse advance, normal
+	.byte $10, $14		; cur left / right
+	.byte 00, 00		; cur up / dn
+	.byte 00, 00		; flash on / off
+	.byte $0E, $0C		; cur on / off
+	.byte $1C, $18		; disp right / left
+	.byte 0, 0, 0, 0	; curpos, delay, page, ldelay
+	.byte 0, 0, 0, 0	; beep on/off, LED on/off
+	.byte 1, 1, 1, 1, 1	; pad a bit w/ clrscrn
+
+.proc
+char_escape:
+	; process escape seq.s
+	call nextchar	; what code?
+	mov a, paaram
+	add a, #esc_table
+	movp a, @a
+	jz .0$		; if entry in table ==0 code is below
+			; if !=0, then this byte gets sent out
+	jmp cs_outi
+	.0$:
+		mov a, param
+		add a, # -8
+		jnz .1$
+;		jmp curup
+	.1$:
+		dec a
+		jnz .2$
+;		jmp curdown
+	.2$:
+		dec a
+		jnz .2.1$
+			; flash on
+		dis tcnti
+		mov a, modes
+		anl a, #$FB
+		mov modes, a
+		en tcnti
+		jmp proc_loop
+	.2.1$:
+		dec a
+		jnz .2.2$
+			; flash off
+		dis tcnti
+		mov a, modes
+		orl a, #4
+		mov modes, a
+		mov param, #$0C
+		call outinstr
+		en tcnti
+		jmp proc_loop
+	.2.2$:
+		add a, #(11-16)
+		jnz .3$
+			; set cursor position
+		call nextchar
+		mov a, param
+		orl a, #$80
+		call outinstr
+		jmp proc_loop
+	.3$:
+		dec a
+		jnz .4$
+			; delay 
+		call nextchar
+		mov a, param
+		mov mdelay, a
+		call wait
+		jmp proc_loop
+	.4$:
+		dec a
+		jnz .5$
+			; next page
+		mov GP, #page
+		mov a, @GP
+		inc @GP
+		add a, # -MAXPAGES
+		jnz .4.1$
+			mov @GP, #0
+		.4.1$:
+		jmp proc_loop
+	.5$:
+		dec a
+		jnz .6$
+			; L delay 
+		call nextchar
+		mov a, param
+		mov delay4, a
+		call lwait
+		jmp proc_loop
+	.6$:	
+		dec a
+		jnz .7$
+			; beep on
+		dis tcnti
+		mov a, modes
+		anl a, #$fe
+		mov modes, a
+		en tcnti
+		jmp proc_loop
+	.7$:
+		dec a
+		jnz .8$
+			; beep off
+		dis tcnti
+		mov a, modes
+		orl a, #1
+		mov modes, a
+		mov a, P2.image
+		orl a, # B(P2.PIEZO)
+		mov P2.image, a
+		outl P2, a
+		en tcnti
+		jmp proc_loop
+	.8$:
+		dec a
+		jnz .9$
+			; led on
+		dis tcnti
+		mov a, P2.image
+		anl a, # ~ B(P2.LED)
+		outl P2, a
+		mov P2.image, a
+		en tcnti
+		jmp proc_loop
+	.9$:
+		dec a
+		jnz .A$
+			; led off
+		dis tcnti
+		mov a, P2.image
+		orl a, # B(P2.LED)
+		outl P2, a
+		mov P2.image, a
+		en tcnti
+		jmp proc_loop
+	.A$:
+		; bad esc code
+		; fall thru' ?
+cs_outi:
+	mov R2, a
+	call outinstr
+	jmp proc_loop
+
+.proc
+wait:
+		mov a, mdelay
+		jnz wait
+	ret
+.proc
+lwait:
+		mov a, delay4
+		jnz lwait
+	ret
+.proc
+nextchar:
+	; return next char in R2
+	mov R0, #page
+	mov a, @R0
+	mov R0, #offset
+	jnz .0$
+		mov a, @R0
+		jmp DPAGE00
+	.0$:
+	dec a
+	jnz .1$
+		mov a, @R0
+		jmp DPAGE01
+	.1$:
+	dec a
+	jnz .2$
+		mov a, @R0
+		jmp DPAGE02
+	.2$:
+	dec a
+	jnz .3$
+		mov a, @R0
+		jmp DPAGE03
+	dec a
+	.3$:
+		; we'd best not ever get this far
+		; so just fall thru'
+nc_ret:
+	; get here from jmp back
+	; update pointers
+	mov R2, a
+	mov R0, #offset
+	inc @R0
+	mov a, @R0
+	jnz ok$
+		mov @R0, #4
+		mov R0,  #page
+		mov a,   @R0
+		inc @R0
+		add a,   # -MAXPAGES 
+		jnz ok$
+			mov @R0, #0
+ok$:
+	ret
+
+
+	; send char/instr in R2 to LCD
+.proc
+outnibble:
+	clr F0
+	cpl F0
+	mov tmp, #0
+	jmp outnib$
+outchar:
+	clr a
+	orl a, # B(P1.LCD.ADRS)
+	jmp outdisp
+outinstr:
+	clr a
+outdisp:
+	dis tcnti
+	outl P1, a
+	mov tmp, a	; save
+	mov a, param	; get data
+	anl a, #$F0	; high part 1st
+	clr F0
+outnib$:
+		orl a, tmp
+		orl a, # B(P1.LCD.ENABLE)
+		outl P1, a
+		anl a, # ~ B(P1.LCD.ENABLE)
+		outl P1, a
+	jf0 outdone$
+	mov a, param	; more data
+	swap a		; low part
+	anl a, #$F0
+	cpl F0
+	jmp outnib$
+outdone$:
+	clr a
+	outl P1, a	; clr bus
+	en tcnti
+	ret
+.proc
+
+
+.org 1024
+DPAGE00:
+	movp a, @a
+	jmp nc_ret
+	nop
+
+.ascii "Jeff Weisberg"
+.byte ESC, ESC_LEDON
+.byte ESC, ESC_BEEPON
+.byte ESC, ESC_FLASHON
+.byte ESC, ESC_LDELAY, 120
+.byte ESC, ESC_FLASHOFF
+.byte ESC, ESC_BEEPOFF
+.byte ESC, ESC_LEDOFF
+.byte ESC, ESC_CURPOS, $40
+.ascii "Nametag"
+.byte ESC, ESC_LDELAY, 120, 00,00,00,00,00
+
+
+.org 1024 + 256
+DPAGE01:
+	movp a, @a
+	jmp nc_ret
+	nop
+
+.org 1024 + 2 * 256
+DPAGE02:
+	movp a, @a
+	jmp nc_ret
+	nop
+
+.org 1024 + 3 * 256
+DPAGE03:
+	movp a, @a
+	jmp nc_ret
+	nop
+
+
+

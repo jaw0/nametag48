@@ -1,0 +1,443 @@
+
+; 8048 LCD nametag
+; Jeff Weisberg
+; Jun. 1993
+
+#include "nametag.h"
+
+.bin	"tag-opnet.bin"
+.symtab	"tag-opnet.sym"
+.symlocal
+
+#define TIMERCOUNT -2
+
+.org 0
+	jmp reset		
+.org 3
+	jmp reset		
+.org 7
+	jmp timer		
+
+.proc
+timer:
+	stop tcnt
+	sel rb1
+	mov r2, a
+	mov a, #TIMERCOUNT
+	mov T, a
+
+	;; incr. elapsed time clock
+	mov r0, # clock
+	clockloop$:
+		inc @r0
+		mov a, @r0
+		jnz .2$
+			mov a, r0
+			add a, # -clockend
+			inc r0
+			jnz clockloop$
+	.2$:
+
+	sel rb0
+	;; oscillate beeper
+	mov a, modes
+	anl a, #B(mode.beep)
+	jz nobeep$
+		mov a, p2image
+		xrl a, # B(P2.PIEZO)
+		mov p2image, a
+		outl P2, a
+	nobeep$:
+
+	sel rb1
+	mov r0, #clock
+	mov a, @r0
+	anl a, #3
+	jnz .1$
+		;; decr. wait time
+		sel rb0
+		dec mdelay
+		mov a, mdelay
+		jnz .1$
+			dec mdelay4
+	.1$:
+
+	;; restore a, restart clock, and return
+	sel rb1
+	mov a, r2
+	sel rb0
+	start t
+	retr
+
+.proc
+lcd_cmd_nib:
+	mov a, param
+	anl a, #$F0
+	outl p1, a
+	call pause
+	orl a, #B(P1.LCD.ENABLE)
+	outl p1, a
+	call pause
+	anl a, #$F0
+	outl p1,a
+	ret
+
+.proc
+lcd_data_nib:
+	call pause
+	mov a, param
+	anl a, #$F0
+	orl a, #B(P1.LCD.ADRS)
+	outl p1, a
+	call pause
+	orl a, #B(P1.LCD.ENABLE)
+	outl p1, a
+	call pause
+	anl a, #$F0
+	outl p1,a
+	ret
+
+.proc
+lcd_cmd:
+	call lcd_cmd_nib	; high part
+	mov a, param
+	swap a
+	mov param, a
+	call lcd_cmd_nib	; low part
+	ret
+
+.proc
+lcd_char:
+	call lcd_data_nib
+	mov a, param
+	swap a
+	mov param, a
+	call lcd_data_nib
+	ret
+
+.proc
+lcd_init:
+	mov mdelay, #15
+	call wait
+	mov param, #$30
+	call lcd_cmd_nib
+	mov mdelay, #6
+	call wait
+	mov param, #$30
+	call lcd_cmd_nib
+	mov mdelay, #2
+	call wait
+	mov param, #$30
+	call lcd_cmd_nib
+	mov param, #$20
+	call lcd_cmd_nib
+
+	mov param, #$08
+	call lcd_cmd
+	mov param, #$01
+	call lcd_cmd
+	mov param, #$0C
+	call lcd_cmd
+
+	ret
+
+.proc
+pause:
+	mov mdelay, #2
+	call wait
+	ret
+
+.proc
+wait:
+	mov @sp, a
+	.1$:
+		mov a, mdelay
+		jnz .1$
+	mov a, @sp
+	ret
+
+.proc
+lwait:
+	mov @sp, a
+	mov mdelay, #00
+	.1$:
+		mov a, mdelay4
+		jnz .1$
+	mov a, @sp
+	ret
+
+.proc
+led_on:
+	mov a, p2image
+	anl a, # ~B(P2.LED)
+	mov p2image, a
+	outl P2, a
+	ret
+
+.proc
+led_off:
+	mov a, p2image
+	orl a, # B(P2.LED)
+	mov p2image, a
+	outl P2, a
+	ret
+
+.proc
+flash:
+	call led_on
+	mov mdelay4, #1
+	call lwait
+	call led_off
+	mov mdelay4, #1
+	call lwait
+	ret
+
+.proc
+beep_on:
+	mov a, modes
+	orl a, # B(mode.beep)
+	mov modes,a
+	ret
+
+.proc
+beep_off:
+	mov a, modes
+	anl a, # ~B(mode.beep)
+	mov modes,a
+	ret
+
+.proc
+beep:
+	call beep_on
+	mov mdelay4, #1		; 1/4 second
+	call lwait
+	call beep_off
+	mov mdelay4, #1
+	call lwait
+	ret
+
+.proc
+reset:
+	sel rb0
+	; zero the clock
+	mov r0, #clock
+	clockloop$:
+		mov @r0, #00
+		mov a, r0
+		add a, # -clockend
+		inc r0
+		jnz clockloop$
+	clr a
+	mov modes, a
+	mov sp, # stack.begin
+	cpl a			; xFF
+	mov p2image, a
+	outl P2, a
+	mov t, a
+	start t
+	en tcnti
+
+	call beep
+	call led_on
+	; mov mdelay4, #$2
+	; call lwait
+	call lcd_init
+	call beep
+	call led_off
+
+	mov mdelay4, #$2
+	call lwait
+	jmp message_loop
+				; .= xFC
+				
+
+;;;;			 ****** PAGE BREAK (0xFF) ******
+
+.align 256
+.proc
+message_loop:			
+	; set page 0
+	mov gp, #c_page
+	mov @gp, #0
+	call beep
+	call flash
+
+	in a, P2
+	jb6  alt_message	; P2.JUMPER1
+		PUTS( message_1 )
+		PUTS( message_2 )
+		jmp cont_message
+	
+	alt_message:
+		PUTS( message_3 )
+		PUTS( message_4 )
+
+	cont_message:
+		SLEEP( 5 )
+		call beep
+		call flash
+		PUTS( message_5 )
+		SLEEP( 2 )
+		call beep
+		call flash
+		SLEEP( 2 )
+		call beep
+		call flash
+		SLEEP( 2 )
+		call beep
+		call flash
+		SLEEP( 2 )
+
+		PUTS( message_6 )
+		PUTS( message_7 )
+		call beep
+		call flash
+		SLEEP( 5 )
+
+		PUTS( message_8 )
+		mov gp, #c_page		; set page 1
+		mov @gp, #1
+		PUTS( message_9 )
+		call beep
+		call flash
+		SLEEP( 5 )
+
+		PUTS( message_10 )
+		PUTS( message_11 )
+		SLEEP( 2 )
+		PUTS( message_12 )
+		SLEEP( 5 )
+
+
+	jmp message_loop
+	.note$:			; .= 0x197
+
+;;;; 			****** PAGE BREAK (x1FF) ******
+
+.align 256
+.proc
+lcd_puts:
+	;; look at page
+	mov gp, #c_page
+	mov a, @gp
+	jz this_page$
+	dec a
+	jnz .1$
+	jmp page_01
+.1$:
+	dec a
+	jnz .2$
+	jmp page_02
+.2$:
+	jmp page_03
+
+this_page$:
+	;; get the message offset
+	mov gp, #c_ptr
+	mov a, @gp
+	movp a, @a
+
+lcd_puts_cont:
+	inc @gp
+	mov param, a
+	jz done$
+	jb7  special$
+	call lcd_char
+	jmp lcd_puts
+
+special$:
+	jb6 needmore$
+	anl a, #$7F
+	mov param, a
+	call lcd_cmd
+	jmp lcd_puts
+
+needmore$:
+	jb0 .11$
+		mov param, #$80	; setcur(0,0)
+		jmp .12$
+	.11$:
+		mov param, #$C0	; setcur(0,1)
+	.12$:
+	call lcd_cmd
+	jmp lcd_puts
+
+done$:
+	ret
+
+
+message_1:				; 0x235
+	.byte LCDC_HOME
+	.asciz " Experience the "
+message_2:
+	.byte $F1
+	.asciz "   Internet     "
+
+message_3:
+	.byte LCDC_HOME
+	.asciz ":-) Smile you're"
+message_4:
+	.byte $F1
+	.asciz "on the  Internet"
+
+message_5:
+	.byte LCDC_CLS, $F0
+	.asciz "    O p N e t   "
+
+message_6:
+	.byte $F0
+	.asciz "*   Sign up    *"
+message_7:
+	.byte $F1
+	.asciz "*   N O W !!!  *"
+message_8:				; 0x2b3
+	.byte $F0
+	.asciz "     C A L L    "
+
+;;;; 			****** PAGE BREAK ****** (x2FF)
+.align 256
+page_01:
+	;; get the message offset
+	mov gp, #c_ptr
+	mov a, @gp
+	movp a, @a
+	jmp lcd_puts_cont
+
+message_9:				; 0x306
+	.byte $F1
+	.asciz " 1.610.520.2880 "
+
+message_10:
+	.byte $F0
+	.asciz "visit us at:    "
+message_11:
+	.byte $F1
+	.asciz "http://         "
+message_12:				; 0x33c
+	.byte $F1
+	.asciz "www.op.net      "
+
+
+;;;;			****** PAGE BREAK (x3FF) ******
+.align 256
+page_02:
+	;; get the message offset
+	mov gp, #c_ptr
+	mov a, @gp
+	movp a, @a
+	jmp lcd_puts_cont
+
+
+;;;;			****** PAGE BREAK (x4FF) ******
+.align 256
+page_03:
+	;; get the message offset
+	mov gp, #c_ptr
+	mov a, @gp
+	movp a, @a
+	jmp lcd_puts_cont
+
+
+.asciz "Nametag -- OpNet version 1.1, Jeff Weisberg Oct 1995"
+
+

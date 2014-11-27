@@ -1,0 +1,330 @@
+
+; 8048 LCD nametag
+; Jeff Weisberg
+; Jun. 1993
+
+#include "nametag.h"
+
+.bin "nametag.bin"
+.symtab "nametag.sym"
+.symlocal
+
+#define TIMERCOUNT -2
+
+.org 0
+	jmp reset		
+.org 3
+	jmp reset		
+.org 7
+	jmp timer		
+
+.proc
+timer:
+	stop tcnt
+	sel rb1
+	mov r2, a
+	mov a, #TIMERCOUNT
+	mov T, a
+
+	; incr. elapsed time clock
+	mov r0, # clock
+	clockloop$:
+		inc @r0
+		mov a, @r0
+		jnz .2$
+			mov a, r0
+			add a, # -clockend
+			inc r0
+			jnz clockloop$
+	.2$:
+
+	sel rb0
+	; oscillate beeper
+	mov a, modes
+	anl a, #B(mode.beep)
+	jz nobeep$
+		mov a, p2image
+		xrl a, # B(P2.PIEZO)
+		mov p2image, a
+		outl P2, a
+	nobeep$:
+
+	sel rb1
+	mov r0, #clock
+	mov a, @r0
+	anl a, #3
+	jnz .1$
+		; decr. wait time
+		sel rb0
+		dec mdelay
+		mov a, mdelay
+		jnz .1$
+			dec mdelay4
+	.1$:
+
+	; restore a, restart clock, and return
+	sel rb1
+	mov a, r2
+	sel rb0
+	start t
+	retr
+
+.proc
+lcd_cmd_nib:
+	mov a, param
+	anl a, #$F0
+	outl p1, a
+	call pause
+	orl a, #B(P1.LCD.ENABLE)
+	outl p1, a
+	call pause
+	anl a, #$F0
+	outl p1,a
+	ret
+
+.proc
+lcd_data_nib:
+	call pause
+	mov a, param
+	anl a, #$F0
+	orl a, #B(P1.LCD.ADRS)
+	outl p1, a
+	call pause
+	orl a, #B(P1.LCD.ENABLE)
+	outl p1, a
+	call pause
+	anl a, #$F0
+	outl p1,a
+	ret
+
+.proc
+lcd_cmd:
+	call lcd_cmd_nib	; high part
+	mov a, param
+	swap a
+	mov param, a
+	call lcd_cmd_nib	; low part
+	ret
+
+.proc
+lcd_char:
+	; call beep
+	call lcd_data_nib
+	mov a, param
+	swap a
+	mov param, a
+	call lcd_data_nib
+	ret
+
+.proc
+lcd_init:
+	mov mdelay, #15
+	call wait
+	mov param, #$30
+	call lcd_cmd_nib
+	mov mdelay, #6
+	call wait
+	mov param, #$30
+	call lcd_cmd_nib
+	mov mdelay, #2
+	call wait
+	mov param, #$30
+	call lcd_cmd_nib
+	mov param, #$20
+	call lcd_cmd_nib
+
+	mov param, #$08
+	call lcd_cmd
+	mov param, #$01
+	call lcd_cmd
+	mov param, #$0C
+	call lcd_cmd
+
+	;;;ret
+
+	mov gp, #init_pac$
+	mov param, #$40
+	call lcd_cmd
+	.1$:
+		mov a, @gp
+		inc gp
+		jb7 done$
+		mov param,a
+		call lcd_char
+		jmp .1$
+	done$:
+	mov param, #$80
+	call lcd_cmd
+	
+	ret
+init_pac$:
+	.byte %100, %1110, %11111, %11111, %11111, %1110, %100, 0 ; closed
+	.byte %100, %1110, %11111, %11000, %11111, %1110, %100, 0 ; small mouth
+	.byte %110, %1111, %11100, %11000, %11100, %1111, %110, 0 ; big mouth
+
+	.byte %100, %1110, %11111, %11, %11111, %1110, %100, 0	; small mouth
+	.byte %1100, %11110, %111, %11, %111, %11110, %1100, 0  ; big mouth
+	.byte $FF
+
+.proc
+pause:
+	mov mdelay, #2
+	call wait
+	ret
+
+.proc
+wait:
+	mov @sp, a
+	.1$:
+		mov a, mdelay
+		jnz .1$
+	mov a, @sp
+	ret
+
+.proc
+lwait:
+	mov @sp, a
+	mov mdelay, #00
+	.1$:
+		mov a, mdelay4
+		jnz .1$
+	mov a, @sp
+	ret
+
+.proc
+led_on:
+	mov a, p2image
+	anl a, # ~B(P2.LED)
+	mov p2image, a
+	outl P2, a
+	ret
+
+.proc
+led_off:
+	mov a, p2image
+	orl a, # B(P2.LED)
+	mov p2image, a
+	outl P2, a
+	ret
+
+.proc
+beep_on:
+	mov a, modes
+	orl a, # B(mode.beep)
+	mov modes,a
+	ret
+
+.proc
+beep_off:
+	mov a, modes
+	anl a, # ~B(mode.beep)
+	mov modes,a
+	ret
+
+.proc
+beep:
+	call beep_on
+	mov mdelay4, #1	; 1/4 second
+	call lwait
+	call beep_off
+			; ********* PAGE BREAK ********
+	mov mdelay4, #1
+	call lwait
+	ret
+
+
+.proc
+lcd_puts:
+	mov gp, #c_ptr
+	mov a, @gp
+	movp a, @a
+	inc @gp
+	mov param, a
+	jz done$
+	jb7  special$
+	call lcd_char
+	jmp lcd_puts
+
+special$:
+	jb6 needmore$
+	anl a, #$7F
+	mov param, a
+	call lcd_cmd
+	jmp lcd_puts
+
+needmore$:
+	anl a, #$3F
+	jmp lcd_puts
+
+done$:
+	ret
+
+.proc
+reset:
+	sel rb0
+	; zero the clock
+	mov r0, #clock
+	clockloop$:
+		mov @r0, #00
+		mov a, r0
+		add a, # -clockend
+		inc r0
+		jnz clockloop$
+
+	clr a
+	mov modes, a
+	mov sp, # stack.begin
+	cpl a
+	mov p2image, a
+	outl P2, a
+	mov t, a
+	start t
+	en tcnti
+
+	call beep
+	call led_on
+	mov mdelay4, #$2
+	call lwait
+	call beep
+	call lcd_init
+	call led_off
+	mov mdelay4, #$2
+	call lwait
+
+	call led_on
+	mov mdelay4, #4
+	call lwait
+	call led_off
+.1$:
+	SET_CUR(0,0)
+	PUTS( message_1 )
+	SET_CUR(0,1)
+	PUTS( message_2 )
+	WAIT( 16 )
+	SET_CUR(0,0)
+	PUTS( message_2)
+	SET_CUR(0,1)
+	PUTS( message_6)
+	WAIT( 16 )
+
+
+	jmp .1$
+
+message_1:
+	.byte LCDC_HOME
+	.asciz "Hello My Name is"
+message_2:
+	.asciz "  Jeff Weisberg "
+message_6:
+	.asciz "Pac-Man     LH56"
+
+message_3:
+	.asciz "weisberg@ee.rochester.edu "
+message_4:
+	.asciz "jaw@magoo.roc.ny.us       "
+
+
+
+
+
+
